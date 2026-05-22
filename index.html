@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>のびのびターゲット 風船ゲーム</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    header { padding: 14px 14px 8px; }
+    h1 { margin: 0; font-size: 20px; }
+    .sub { margin-top: 4px; color: #cbd5e1; font-size: 13px; }
+    main { display: grid; gap: 12px; padding: 12px; max-width: 1100px; margin: 0 auto; }
+    .camera {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 3 / 4;
+      max-height: 72vh;
+      overflow: hidden;
+      border-radius: 18px;
+      background: #020617;
+      border: 1px solid rgba(255,255,255,0.16);
+    }
+    video, canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    .hud {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      top: 10px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .metric, .card {
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 16px;
+      padding: 12px;
+      backdrop-filter: blur(6px);
+    }
+    .metric { padding: 8px; }
+    .label { color: #cbd5e1; font-size: 11px; }
+    .value { font-weight: 900; font-size: 19px; line-height: 1.2; }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 14px;
+      padding: 13px 14px;
+      font-weight: 900;
+      font-size: 15px;
+      background: #38bdf8;
+      color: #001018;
+    }
+    button.secondary { background: #334155; color: #f8fafc; }
+    button.warn { background: #f59e0b; color: #1f2937; }
+    button:disabled { opacity: 0.5; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    input[type="range"] { width: 100%; }
+    .status { color: #cbd5e1; font-size: 14px; line-height: 1.55; min-height: 48px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { padding: 7px 4px; border-bottom: 1px solid rgba(255,255,255,0.12); text-align: left; }
+    th { color: #cbd5e1; }
+    .note { color: #cbd5e1; font-size: 12px; line-height: 1.5; }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.12);
+      color: #e2e8f0;
+      font-size: 12px;
+    }
+    @media (min-width: 900px) {
+      main { grid-template-columns: minmax(360px, 1fr) 380px; align-items: start; }
+      .camera { aspect-ratio: 4 / 3; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>のびのびターゲット 風船ゲーム</h1>
+    <div class="sub">スマホカメラで風船を手でタッチして取る試作版</div>
+  </header>
+
+  <main>
+    <section class="camera">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="hud">
+        <div class="metric"><div class="label">スコア</div><div class="value" id="score">0</div></div>
+        <div class="metric"><div class="label">残り時間</div><div class="value" id="time">30.0s</div></div>
+        <div class="metric"><div class="label">コンボ</div><div class="value" id="combo">0</div></div>
+        <div class="metric"><div class="label">ハイスコア</div><div class="value" id="highscore">0</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <button id="cameraBtn">カメラ開始</button>
+        <button id="gameBtn" class="warn" disabled>ゲーム開始 30秒</button>
+      </div>
+
+      <div style="height:8px"></div>
+      <div class="row3">
+        <button class="secondary" id="saveBtn">記録する</button>
+        <button class="secondary" id="clearBtn">記録消去</button>
+        <button class="secondary" id="retryBtn">風船を更新</button>
+      </div>
+
+      <div style="height:12px"></div>
+      <label>痛み NRS：<span id="painText">0</span></label>
+      <input id="pain" type="range" min="0" max="10" value="0" />
+
+      <div style="height:10px"></div>
+      <div class="pill">モード：30秒で何個の風船を取れるか</div>
+
+      <p class="status" id="status">まず「カメラ開始」を押してください。全身、特に両手が画面に入る位置に立ちます。風船に手を近づけると取れます。</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>最後の結果：<b id="lastResult">-</b></div>
+        <div>痛み入力：<b id="painEcho">0</b></div>
+      </div>
+
+      <h2 style="font-size:16px;margin:16px 0 4px;">記録</h2>
+      <table>
+        <thead><tr><th>時刻</th><th>点</th><th>痛み</th><th>一言</th></tr></thead>
+        <tbody id="records"></tbody>
+      </table>
+
+      <p class="note">
+        使い方：横向きでも正面でも構いませんが、まずは正面で両手がよく見える位置がおすすめです。肩の高さ、頭の上、体の前下方などに風船が出ます。痛み、しびれ、鋭い違和感があれば中止してください。
+      </p>
+    </section>
+  </main>
+
+  <script type="module">
+    import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("overlay");
+    const ctx = canvas.getContext("2d");
+
+    const cameraBtn = document.getElementById("cameraBtn");
+    const gameBtn = document.getElementById("gameBtn");
+    const saveBtn = document.getElementById("saveBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const retryBtn = document.getElementById("retryBtn");
+
+    const pain = document.getElementById("pain");
+    const painText = document.getElementById("painText");
+    const painEcho = document.getElementById("painEcho");
+    const scoreEl = document.getElementById("score");
+    const timeEl = document.getElementById("time");
+    const comboEl = document.getElementById("combo");
+    const highscoreEl = document.getElementById("highscore");
+    const statusEl = document.getElementById("status");
+    const lastResultEl = document.getElementById("lastResult");
+    const recordsEl = document.getElementById("records");
+
+    const IDX = {
+      nose: 0,
+      leftShoulder: 11, rightShoulder: 12,
+      leftElbow: 13, rightElbow: 14,
+      leftWrist: 15, rightWrist: 16,
+      leftHip: 23, rightHip: 24
+    };
+
+    const RECORD_KEY = "nobinobi-balloon-records-v1";
+    const HIGH_KEY = "nobinobi-balloon-high-v1";
+
+    let pose = null;
+    let running = false;
+    let lastVideoTime = -1;
+    let currentPose = null;
+
+    let gameRunning = false;
+    let gameStartMs = 0;
+    let gameDurationMs = 30000;
+    let score = 0;
+    let combo = 0;
+    let lastHitMs = 0;
+
+    let balloon = null;
+    let balloonFloatSeed = Math.random() * Math.PI * 2;
+
+    pain.addEventListener("input", () => {
+      painText.textContent = pain.value;
+      painEcho.textContent = pain.value;
+    });
+
+    cameraBtn.addEventListener("click", startCamera);
+    gameBtn.addEventListener("click", startGame);
+    retryBtn.addEventListener("click", () => {
+      balloon = spawnBalloon();
+      if (!gameRunning) drawScene();
+    });
+    saveBtn.addEventListener("click", saveRecord);
+    clearBtn.addEventListener("click", () => {
+      localStorage.removeItem(RECORD_KEY);
+      localStorage.removeItem(HIGH_KEY);
+      renderRecords();
+      highscoreEl.textContent = "0";
+      lastResultEl.textContent = "-";
+    });
+
+    renderRecords();
+    highscoreEl.textContent = localStorage.getItem(HIGH_KEY) || "0";
+    painText.textContent = pain.value;
+    painEcho.textContent = pain.value;
+
+    async function startCamera() {
+      if (running) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        statusEl.textContent = "このブラウザではカメラが使えません。HTTPSで開いているか確認してください。";
+        return;
+      }
+
+      cameraBtn.disabled = true;
+      statusEl.textContent = "モデルを読み込んでいます...";
+
+      try {
+        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+        pose = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+
+        video.srcObject = stream;
+        await video.play();
+
+        canvas.width = video.videoWidth || 720;
+        canvas.height = video.videoHeight || 1280;
+
+        running = true;
+        gameBtn.disabled = false;
+        cameraBtn.textContent = "カメラ起動中";
+        statusEl.textContent = "カメラ準備完了です。両手が見える位置に立って「ゲーム開始 30秒」を押してください。";
+        balloon = spawnBalloon();
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "起動できませんでした。カメラ権限、HTTPS、通信環境を確認してください。";
+        cameraBtn.disabled = false;
+      }
+    }
+
+    function startGame() {
+      if (!running) return;
+      gameRunning = true;
+      gameStartMs = performance.now();
+      score = 0;
+      combo = 0;
+      lastHitMs = 0;
+      balloon = spawnBalloon();
+      scoreEl.textContent = "0";
+      comboEl.textContent = "0";
+      timeEl.textContent = "30.0s";
+      statusEl.textContent = "スタートしました。風船に手を近づけて取ってください。";
+    }
+
+    function loop() {
+      if (!running) return;
+      const nowMs = performance.now();
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const result = pose.detectForVideo(video, nowMs);
+        currentPose = (result.landmarks && result.landmarks[0]) ? result.landmarks[0] : null;
+      }
+
+      updateGame(nowMs);
+      drawScene(nowMs);
+      requestAnimationFrame(loop);
+    }
+
+    function updateGame(nowMs) {
+      if (!gameRunning) return;
+
+      const elapsed = nowMs - gameStartMs;
+      const remain = Math.max(0, gameDurationMs - elapsed);
+      timeEl.textContent = `${(remain / 1000).toFixed(1)}s`;
+
+      if (remain <= 0) {
+        endGame();
+        return;
+      }
+
+      if (!currentPose || !balloon) return;
+
+      const wrists = getWrists(currentPose);
+      const b = getBalloonDisplayPos(nowMs);
+      const hitThreshold = Math.min(canvas.width, canvas.height) * 0.09;
+
+      let hit = false;
+      for (const wrist of wrists) {
+        if (!wrist) continue;
+        const wp = px(wrist);
+        const d = Math.hypot(wp.x - b.x, wp.y - b.y);
+        if (d <= hitThreshold) {
+          hit = true;
+          break;
+        }
+      }
+
+      if (hit) {
+        score += 1;
+        combo += 1;
+        lastHitMs = nowMs;
+        balloon = spawnBalloon();
+        balloonFloatSeed = Math.random() * Math.PI * 2;
+        scoreEl.textContent = String(score);
+        comboEl.textContent = String(combo);
+        statusEl.textContent = "ヒット！ 次の風船へ。";
+      }
+    }
+
+    function endGame() {
+      gameRunning = false;
+      timeEl.textContent = "0.0s";
+      lastResultEl.textContent = `${score}個`;
+      const high = Number(localStorage.getItem(HIGH_KEY) || 0);
+      if (score > high) {
+        localStorage.setItem(HIGH_KEY, String(score));
+        highscoreEl.textContent = String(score);
+        statusEl.textContent = `終了です。${score}個取りました。ハイスコア更新！`;
+      } else {
+        highscoreEl.textContent = String(high);
+        statusEl.textContent = `終了です。${score}個取りました。`;
+      }
+    }
+
+    function spawnBalloon() {
+      const positions = [
+        { x: 0.25, y: 0.30, label: "左上" },
+        { x: 0.50, y: 0.22, label: "上" },
+        { x: 0.75, y: 0.30, label: "右上" },
+        { x: 0.30, y: 0.52, label: "左中央" },
+        { x: 0.70, y: 0.52, label: "右中央" },
+        { x: 0.38, y: 0.72, label: "左下" },
+        { x: 0.62, y: 0.72, label: "右下" },
+      ];
+      const colors = ["#f472b6", "#fb7185", "#38bdf8", "#f59e0b", "#34d399", "#a78bfa"];
+      const p = positions[Math.floor(Math.random() * positions.length)];
+      const c = colors[Math.floor(Math.random() * colors.length)];
+      return { x: p.x, y: p.y, color: c, label: p.label };
+    }
+
+    function getBalloonDisplayPos(nowMs = performance.now()) {
+      if (!balloon) return { x: canvas.width * 0.5, y: canvas.height * 0.4 };
+      const driftX = Math.sin(nowMs / 650 + balloonFloatSeed) * 10;
+      const driftY = Math.cos(nowMs / 900 + balloonFloatSeed) * 8;
+      return { x: balloon.x * canvas.width + driftX, y: balloon.y * canvas.height + driftY };
+    }
+
+    function drawScene(nowMs = performance.now()) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (currentPose) {
+        drawSkeleton(currentPose);
+        drawWrists(currentPose);
+      }
+
+      if (balloon) {
+        const b = getBalloonDisplayPos(nowMs);
+        drawBalloon(b.x, b.y, balloon.color);
+        drawLabel(b.x, b.y + 58, gameRunning ? "タッチ！" : "ここに手を伸ばす");
+      }
+
+      if (gameRunning && nowMs - lastHitMs < 180) {
+        drawFlash();
+      }
+    }
+
+    function drawSkeleton(lm) {
+      const lines = [
+        [11,12], [11,13], [13,15], [12,14], [14,16], [11,23], [12,24], [23,24]
+      ];
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = "rgba(56,189,248,0.85)";
+      ctx.fillStyle = "rgba(248,250,252,0.95)";
+      for (const [a,b] of lines) {
+        if (!lm[a] || !lm[b]) continue;
+        if ((lm[a].visibility ?? 1) < 0.35 || (lm[b].visibility ?? 1) < 0.35) continue;
+        const pa = px(lm[a]), pb = px(lm[b]);
+        ctx.beginPath();
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        ctx.stroke();
+      }
+    }
+
+    function drawWrists(lm) {
+      const wrists = getWrists(lm);
+      wrists.forEach((w, i) => {
+        if (!w || (w.visibility ?? 1) < 0.35) return;
+        const p = px(w);
+        ctx.beginPath();
+        ctx.fillStyle = i === 0 ? "rgba(251,191,36,0.95)" : "rgba(244,114,182,0.95)";
+        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(255,255,255,0.9)";
+        ctx.stroke();
+      });
+    }
+
+    function getWrists(lm) {
+      return [lm[IDX.leftWrist], lm[IDX.rightWrist]];
+    }
+
+    function drawBalloon(x, y, color) {
+      // balloon body
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 34, 44, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // highlight
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.beginPath();
+      ctx.ellipse(x - 10, y - 12, 8, 14, -0.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // knot
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x - 6, y + 39);
+      ctx.lineTo(x + 6, y + 39);
+      ctx.lineTo(x, y + 50);
+      ctx.closePath();
+      ctx.fill();
+
+      // string
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y + 50);
+      ctx.bezierCurveTo(x + 6, y + 72, x - 10, y + 84, x + 3, y + 105);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawLabel(x, y, text) {
+      ctx.font = "bold 18px system-ui";
+      const w = ctx.measureText(text).width + 24;
+      const h = 32;
+      ctx.fillStyle = "rgba(15,23,42,0.82)";
+      roundRect(x - w / 2, y, w, h, 14);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillText(text, x - w / 2 + 12, y + 21);
+    }
+
+    function drawFlash() {
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.font = "bold 56px system-ui";
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.fillText("HIT!", canvas.width * 0.5 - 50, canvas.height * 0.5);
+    }
+
+    function px(p) {
+      return { x: p.x * canvas.width, y: p.y * canvas.height };
+    }
+
+    function saveRecord() {
+      const records = readRecords();
+      const comment = score >= 15 ? "よくできました" : score >= 8 ? "いい感じ" : "まずは継続";
+      records.unshift({
+        time: new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }),
+        score,
+        pain: Number(pain.value),
+        comment
+      });
+      localStorage.setItem(RECORD_KEY, JSON.stringify(records.slice(0, 30)));
+      renderRecords();
+      statusEl.textContent = "記録しました。";
+    }
+
+    function readRecords() {
+      try { return JSON.parse(localStorage.getItem(RECORD_KEY) || "[]"); }
+      catch { return []; }
+    }
+
+    function renderRecords() {
+      const records = readRecords();
+      recordsEl.innerHTML = records.length
+        ? records.map(r => `<tr><td>${esc(r.time)}</td><td>${r.score}</td><td>${r.pain}</td><td>${esc(r.comment)}</td></tr>`).join("")
+        : `<tr><td colspan="4">まだ記録はありません</td></tr>`;
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x+r,y);
+      ctx.lineTo(x+w-r,y);
+      ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+      ctx.lineTo(x+w,y+h-r);
+      ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+      ctx.lineTo(x+r,y+h);
+      ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+      ctx.lineTo(x,y+r);
+      ctx.quadraticCurveTo(x,y,x+r,y);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c]));
+    }
+  </script>
+</body>
+</html>
