@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>のびのびターゲット</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    header { padding: 14px 14px 8px; }
+    h1 { margin: 0; font-size: 20px; }
+    .sub { margin-top: 4px; color: #cbd5e1; font-size: 13px; }
+    main { display: grid; gap: 12px; padding: 12px; max-width: 960px; margin: 0 auto; }
+    .camera {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 3 / 4;
+      max-height: 70vh;
+      overflow: hidden;
+      border-radius: 18px;
+      background: #020617;
+      border: 1px solid rgba(255,255,255,0.16);
+    }
+    video, canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    .hud {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      top: 10px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      pointer-events: none;
+    }
+    .card, .metric {
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 16px;
+      padding: 12px;
+    }
+    .metric { padding: 8px; }
+    .label { color: #cbd5e1; font-size: 11px; }
+    .value { font-weight: 900; font-size: 19px; line-height: 1.2; }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 14px;
+      padding: 13px 14px;
+      font-weight: 900;
+      font-size: 15px;
+      background: #38bdf8;
+      color: #001018;
+    }
+    button.secondary { background: #334155; color: #f8fafc; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    input[type="range"] { width: 100%; }
+    .status { color: #cbd5e1; font-size: 14px; line-height: 1.55; min-height: 44px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { padding: 7px 4px; border-bottom: 1px solid rgba(255,255,255,0.12); text-align: left; }
+    th { color: #cbd5e1; }
+    .note { color: #cbd5e1; font-size: 12px; line-height: 1.5; }
+    @media (min-width: 820px) {
+      main { grid-template-columns: minmax(360px, 1fr) 360px; align-items: start; }
+      .camera { aspect-ratio: 4 / 3; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>のびのびターゲット</h1>
+    <div class="sub">スマホカメラで前屈をスコア化するMVP</div>
+  </header>
+
+  <main>
+    <section class="camera">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="hud">
+        <div class="metric"><div class="label">スコア</div><div class="value" id="score">0</div></div>
+        <div class="metric"><div class="label">Lv</div><div class="value" id="level">0</div></div>
+        <div class="metric"><div class="label">キープ</div><div class="value" id="hold">0.0s</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <button id="startBtn">カメラ開始</button>
+      <div style="height:8px"></div>
+      <div class="row">
+        <button class="secondary" id="saveBtn">記録する</button>
+        <button class="secondary" id="clearBtn">消去</button>
+      </div>
+
+      <div style="height:12px"></div>
+      <label>痛み NRS：<span id="painText">0</span></label>
+      <input id="pain" type="range" min="0" max="10" value="0" />
+
+      <p class="status" id="status">横向きに立ち、全身が入るようにスマホを置いてください。反動を使わず、ゆっくり前屈します。</p>
+      <div>ベストスコア：<b id="best">0</b></div>
+
+      <h2 style="font-size:16px;margin:16px 0 4px;">記録</h2>
+      <table>
+        <thead><tr><th>時刻</th><th>点</th><th>Lv</th><th>痛み</th></tr></thead>
+        <tbody id="records"></tbody>
+      </table>
+
+      <p class="note">これは医療機器ではありません。研究で使う場合は、撮影距離・高さ・向き・床マーカーを固定してください。痛み、しびれ、鋭い違和感があれば中止してください。</p>
+    </section>
+  </main>
+
+  <script type="module">
+    import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("overlay");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.getElementById("startBtn");
+    const saveBtn = document.getElementById("saveBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const pain = document.getElementById("pain");
+    const painText = document.getElementById("painText");
+    const scoreEl = document.getElementById("score");
+    const levelEl = document.getElementById("level");
+    const holdEl = document.getElementById("hold");
+    const statusEl = document.getElementById("status");
+    const bestEl = document.getElementById("best");
+    const recordsEl = document.getElementById("records");
+
+    const IDX = { LS:11, RS:12, LW:15, RW:16, LH:23, RH:24, LK:25, RK:26, LA:27, RA:28, LF:31, RF:32 };
+    const RECORD_KEY = "nobinobi-records-v2";
+    const BEST_KEY = "nobinobi-best-v2";
+
+    let pose = null;
+    let running = false;
+    let lastVideoTime = -1;
+    let lastFlexion = null;
+    let lastMs = null;
+    let holdStart = null;
+    let now = { score: 0, level: 0, pain: 0, hold: 0, bounce: false };
+
+    renderRecords();
+    bestEl.textContent = localStorage.getItem(BEST_KEY) || "0";
+
+    pain.addEventListener("input", () => {
+      painText.textContent = pain.value;
+      now.pain = Number(pain.value);
+      updateScore();
+    });
+
+    startBtn.addEventListener("click", start);
+    saveBtn.addEventListener("click", saveRecord);
+    clearBtn.addEventListener("click", () => {
+      localStorage.removeItem(RECORD_KEY);
+      localStorage.removeItem(BEST_KEY);
+      bestEl.textContent = "0";
+      renderRecords();
+    });
+
+    async function start() {
+      if (running) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        statusEl.textContent = "このブラウザではカメラが使えません。HTTPSで開いているか確認してください。";
+        return;
+      }
+
+      startBtn.disabled = true;
+      statusEl.textContent = "モデルを読み込んでいます...";
+
+      try {
+        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+        pose = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        canvas.width = video.videoWidth || 720;
+        canvas.height = video.videoHeight || 1280;
+
+        running = true;
+        startBtn.textContent = "実行中";
+        statusEl.textContent = "全身を画面に入れて、横向きでゆっくり前屈してください。";
+        requestAnimationFrame(loop);
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "起動できませんでした。カメラ権限、HTTPS、通信環境を確認してください。";
+        startBtn.disabled = false;
+      }
+    }
+
+    function loop() {
+      if (!running) return;
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const result = pose.detectForVideo(video, performance.now());
+        analyze(result, performance.now());
+      }
+      requestAnimationFrame(loop);
+    }
+
+    function analyze(result, ms) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const lm = result.landmarks && result.landmarks[0];
+      if (!lm) {
+        statusEl.textContent = "姿勢を検出できません。明るい場所で全身を映してください。";
+        return;
+      }
+      drawSkeleton(lm);
+
+      const leftVis = vis(lm, [IDX.LS, IDX.LW, IDX.LH, IDX.LK, IDX.LA]);
+      const rightVis = vis(lm, [IDX.RS, IDX.RW, IDX.RH, IDX.RK, IDX.RA]);
+      const side = leftVis >= rightVis ? "L" : "R";
+      const p = side === "L"
+        ? { shoulder: lm[IDX.LS], wrist: lm[IDX.LW], hip: lm[IDX.LH], knee: lm[IDX.LK], ankle: lm[IDX.LA], foot: lm[IDX.LF] }
+        : { shoulder: lm[IDX.RS], wrist: lm[IDX.RW], hip: lm[IDX.RH], knee: lm[IDX.RK], ankle: lm[IDX.RA], foot: lm[IDX.RF] };
+
+      const bodyScale = Math.max(0.001, distance(mid(lm[IDX.LS], lm[IDX.RS]), mid(lm[IDX.LA], lm[IDX.RA])));
+      const reach = Math.min(distance(p.wrist, p.ankle), distance(p.wrist, p.foot || p.ankle));
+      const ratio = reach / bodyScale;
+      const level = reachLevel(ratio);
+
+      const hipAngle = angle(p.shoulder, p.hip, p.knee);
+      const flexion = clamp(180 - hipAngle, 0, 140);
+      const dt = lastMs ? (ms - lastMs) / 1000 : 0;
+      const velocity = lastFlexion !== null && dt > 0 ? Math.abs(flexion - lastFlexion) / dt : 0;
+      const bounce = velocity > 120;
+      lastFlexion = flexion;
+      lastMs = ms;
+
+      if (level >= 2 && !bounce) {
+        if (!holdStart) holdStart = ms;
+        now.hold = (ms - holdStart) / 1000;
+      } else {
+        holdStart = null;
+        now.hold = 0;
+      }
+
+      now.level = level;
+      now.bounce = bounce;
+      now.pain = Number(pain.value);
+      updateScore();
+      drawReach(p.wrist, p.ankle, level, ratio);
+
+      const msg1 = ["まだ遠い", "Lv1 膝付近", "Lv2 すね付近", "Lv3 足首付近", "Lv4 つま先付近", "Lv5 つま先より前"][level];
+      const msg2 = bounce ? "反動が大きいです" : "ゆっくりできています";
+      const msg3 = now.pain <= 2 ? "痛みは許容範囲" : "痛みが強いので中止を検討";
+      statusEl.textContent = `${msg1}｜股関節屈曲目安 ${flexion.toFixed(0)}°｜${msg2}｜${msg3}`;
+    }
+
+    function updateScore() {
+      const levelScore = now.level * 10;
+      const holdScore = now.hold >= 3 ? 10 : 0;
+      const painScore = now.pain <= 2 ? 10 : 0;
+      const smoothScore = now.bounce ? 0 : 10;
+      now.score = levelScore + holdScore + painScore + smoothScore;
+      scoreEl.textContent = now.score;
+      levelEl.textContent = now.level;
+      holdEl.textContent = `${now.hold.toFixed(1)}s`;
+      const best = Number(localStorage.getItem(BEST_KEY) || 0);
+      if (now.score > best) {
+        localStorage.setItem(BEST_KEY, String(now.score));
+        bestEl.textContent = String(now.score);
+      }
+    }
+
+    function reachLevel(r) {
+      if (r < 0.16) return 5;
+      if (r < 0.22) return 4;
+      if (r < 0.30) return 3;
+      if (r < 0.42) return 2;
+      if (r < 0.58) return 1;
+      return 0;
+    }
+
+    function saveRecord() {
+      const records = readRecords();
+      records.unshift({
+        time: new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }),
+        score: now.score,
+        level: now.level,
+        pain: now.pain
+      });
+      localStorage.setItem(RECORD_KEY, JSON.stringify(records.slice(0, 30)));
+      renderRecords();
+      statusEl.textContent = "記録しました。次回も同じスマホ位置・同じ向きで測ってください。";
+    }
+
+    function readRecords() {
+      try { return JSON.parse(localStorage.getItem(RECORD_KEY) || "[]"); }
+      catch { return []; }
+    }
+
+    function renderRecords() {
+      const records = readRecords();
+      recordsEl.innerHTML = records.length
+        ? records.map(r => `<tr><td>${esc(r.time)}</td><td>${r.score}</td><td>${r.level}</td><td>${r.pain}</td></tr>`).join("")
+        : `<tr><td colspan="4">まだ記録はありません</td></tr>`;
+    }
+
+    function drawSkeleton(lm) {
+      const lines = [[11,12],[11,23],[12,24],[23,24],[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[27,31],[24,26],[26,28],[28,32]];
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = "rgba(56,189,248,0.85)";
+      ctx.fillStyle = "rgba(248,250,252,0.95)";
+      for (const [a,b] of lines) {
+        if (!lm[a] || !lm[b]) continue;
+        if ((lm[a].visibility ?? 1) < 0.35 || (lm[b].visibility ?? 1) < 0.35) continue;
+        const pa = px(lm[a]); const pb = px(lm[b]);
+        ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+      }
+      for (const p of lm) {
+        if ((p.visibility ?? 1) < 0.45) continue;
+        const q = px(p);
+        ctx.beginPath(); ctx.arc(q.x, q.y, 4.5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    function drawReach(wrist, ankle, level, ratio) {
+      const w = px(wrist); const a = px(ankle);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = level >= 3 ? "rgba(34,197,94,0.95)" : "rgba(245,158,11,0.95)";
+      ctx.beginPath(); ctx.moveTo(w.x, w.y); ctx.lineTo(a.x, a.y); ctx.stroke();
+      ctx.fillStyle = "rgba(15,23,42,0.82)";
+      roundRect(14, canvas.height - 70, canvas.width - 28, 48, 14);
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = "bold 20px system-ui";
+      ctx.fillText(`Lv${level} / 距離比 ${ratio.toFixed(2)}`, 28, canvas.height - 40);
+    }
+
+    function vis(lm, ids) { return ids.reduce((s, i) => s + (lm[i]?.visibility ?? 0), 0); }
+    function px(p) { return { x: p.x * canvas.width, y: p.y * canvas.height }; }
+    function distance(a,b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+    function mid(a,b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+    function clamp(v,min,max) { return Math.min(max, Math.max(min, v)); }
+    function angle(a,b,c) {
+      const ab = { x: a.x - b.x, y: a.y - b.y };
+      const cb = { x: c.x - b.x, y: c.y - b.y };
+      const dot = ab.x * cb.x + ab.y * cb.y;
+      const mag = Math.max(0.0001, Math.hypot(ab.x, ab.y) * Math.hypot(cb.x, cb.y));
+      return Math.acos(clamp(dot / mag, -1, 1)) * 180 / Math.PI;
+    }
+    function roundRect(x,y,w,h,r) {
+      ctx.beginPath();
+      ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+      ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+      ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+      ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); ctx.fill();
+    }
+    function esc(s) { return String(s).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c])); }
+  </script>
+</body>
+</html>
